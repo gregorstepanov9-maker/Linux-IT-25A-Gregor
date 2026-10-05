@@ -1,0 +1,104 @@
+# Lab 5: Router Building & DNS Configuration
+
+## Lab 5.A — Router Setup and Routing
+
+### 1. Router Interfaces & IP Forwarding Persistence
+IP forwarding is permanently enabled on the Router VM in `/etc/sysctl.conf`:
+
+```ini
+net.ipv4.ip_forward=1
+net.ipv6.conf.all.forwarding=1
+
+vboxuser@gregor:~$ sysctl net.ipv4.ip_forward net.ipv6.conf.all.forwarding
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+
+
+
+sudo nano /etc/netplan/01-netcfg.yaml
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    enp0s3:
+      dhcp4: true
+    enp0s8:
+      addresses: [192.168.56.12/24]
+    enp0s9:
+      addresses: [10.10.10.1/24, "fd00:a::1/64"]
+    enp0s10:
+      addresses: [10.10.20.1/24, "fd00:b::1/64"]
+
+
+
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    enp0s9:
+      addresses:
+        - 10.10.10.20/24
+        - "fd00:a::20/64"
+      routes:
+        - to: 10.10.20.0/24
+          via: 10.10.10.1
+        - to: "fd00:b::/64"
+          via: "fd00:a::1"
+      nameservers:
+        addresses: [10.10.10.1]
+        search: [lab.local]
+
+$ ip route get 10.10.20.20
+10.10.20.20 via 10.10.10.1 dev enp0s9 src 10.10.10.20
+
+$ ip -6 route get fd00:b::20
+fd00:b::20 via fd00:a::1 dev enp0s9 src fd00:a::20
+
+$ ip route get 10.10.20.20
+10.10.20.20 via 10.10.10.1 dev enp0s9 src 10.10.10.20
+
+$ ip -6 route get fd00:b::20
+fd00:b::20 via fd00:a::1 dev enp0s9 src fd00:a::20
+
+$ mtr -n -c 5 10.10.20.20
+HOST: ubuntu                      Loss%   Snt   Last   Avg  Best  Wrst StDev
+  1.|-- 10.10.10.1                 0.0%     5    0.4   0.5   0.4   0.7   0.1
+  2.|-- 10.10.20.20                0.0%     5    0.9   0.8   0.7   1.0   0.1
+
+$ sudo tcpdump -i any icmp or icmp6 -n
+IP 10.10.10.20 > 10.10.20.20: ICMP echo request, id 1, seq 1, length 64
+IP 10.10.10.20 > 10.10.20.20: ICMP echo request, id 1, seq 1, length 64
+IP 10.10.20.20 > 10.10.10.20: ICMP echo reply, id 1, seq 1, length 64
+IP 10.10.20.20 > 10.10.10.20: ICMP echo reply, id 1, seq 1, length 64
+
+server:
+    interface: 10.10.10.1
+    interface: 10.10.20.1
+    interface: 127.0.0.1
+    port: 53
+
+    access-control: 10.10.10.0/24 allow
+    access-control: 10.10.20.0/24 allow
+    access-control: 127.0.0.0/8 allow
+
+    local-zone: "lab.local." static
+    local-data: "router.lab.local. IN A 10.10.10.1"
+    local-data: "ubuntu.lab.local. IN A 10.10.10.20"
+    local-data: "rocky.lab.local.  IN A 10.10.20.20"
+
+$ resolvectl status enp0s9
+Link 2 (enp0s9)
+    Current Scopes: DNS
+         Protocols: +DefaultRoute +LLMNR -mDNS
+Current DNS Server: 10.10.10.1
+       DNS Servers: 10.10.10.1
+        DNS Domain: lab.local
+
+;; Query time: 42 msec
+;; SERVER: 10.10.10.1#53(10.10.10.1)
+;; Query time: 0 msec
+;; SERVER: 10.10.10.1#53(10.10.10.1)
+
+$ sudo tcpdump -i enp0s9 -n port 53
+10.10.10.20.52134 > 10.10.10.1.53: 1234+ A? ubuntu.lab.local. (34)
+10.10.10.1.53 > 10.10.10.20.52134: 1234 1/0/0 A 10.10.10.20 (50)
